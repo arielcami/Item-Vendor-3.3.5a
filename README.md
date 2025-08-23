@@ -1,4 +1,3 @@
-<img width="1179" height="265" alt="image" src="https://github.com/user-attachments/assets/6080e3b1-2279-44ee-8309-54317fb751fb" /># ItemVendor.
 Este Script para AzerothCore ofrece la posibilidad de vender objetos del juego a los jugadores, de manera muy controlada y configurable.
 
 Primero se ejecuta el script SQL en la base de datos WORLD, esto agrega los NPCs con los IDs 60000 y 60001, llamados Michael Jackson y Configurador respectivamente.
