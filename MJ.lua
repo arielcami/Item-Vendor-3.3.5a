@@ -105,7 +105,7 @@ local function Query()
         end,
 
         SELECT_FRECUENT_PURCHASES_BY_PLAYER_ID = function(player_id)
-            return string.format("SELECT * FROM a_itemvendor_frecuent WHERE player_id = %d ORDER BY times DESC LIMIT 10", player_id)
+            return string.format("SELECT * FROM a_itemvendor_frecuent WHERE player_id = %d ORDER BY times DESC LIMIT 15", player_id)
         end,
 
         SELECT_ONE_BY_ENTRY = function(entry)
@@ -143,7 +143,7 @@ local function Query()
         end,
 
         SELECT_LAST_20_FROM_LOG_BY_PLAYER_ID = function(player_id)
-            return string.format("SELECT amount, item_id, purchase_time FROM a_itemvendor_log WHERE player_id = %d ORDER BY purchase_time DESC LIMIT 20", player_id)
+            return string.format("SELECT amount, item_id, purchase_time, expense FROM a_itemvendor_log WHERE player_id = %d ORDER BY purchase_time DESC LIMIT 20", player_id)
         end,
 
         SELECT_BUYPRICE_AND_MAXCOUNT_BY_ITEM_ENTRY = function (item_entry)
@@ -268,8 +268,9 @@ local function CLICK_2(e, P, U, send, option, raw_input)
                     local cantidad = Q:GetUInt32(0)
                     local itemID = Q:GetUInt32(1)
                     local fecha = Q:GetString(2)
+                    local gasto = formatCurrency(Q:GetUInt32(3))
 
-                    P:SendBroadcastMessage(counter .. '. ' .. GetItemLink(itemID, 7) .. ' x' .. cantidad .. ' - ' .. fecha)
+                    P:SendBroadcastMessage(counter .. '. ' .. cantidad .. '× '..  GetItemLink(itemID, 7) .. ' por ' .. gasto .. ' / '   .. fecha)
                     counter = counter + 1
                 until not Q:NextRow();
             else
@@ -377,17 +378,17 @@ local function CLICK_2(e, P, U, send, option, raw_input)
 
                         P:ModifyMoney(-single_purchase)
                         P:AddItem(item_id, 1)
-                        P:SendBroadcastMessage('|cff00ff00Has comprado 1x ' .. item_link .. ' por |cffff00ff' .. pago)
+                        P:SendBroadcastMessage('|cff00ff00Has comprado 1× ' .. item_link .. ' |cff00ff00por |cffff00ff' .. pago)
                         WorldDBExecute( QQ.INSERT_INTO_LOG(playerID, item_id, 1, single_purchase) )
                     end
                 else -- El objeto NO es único así que la compra solo es limitada por la cantidad de oro del jugador
                     P:ModifyMoney(-amount)
                     P:AddItem(item_id, input)
-                    P:SendBroadcastMessage('|cff00ff00Has comprado ' .. input .. 'x ' .. item_link .. ' por |cffff00ff' .. pago)
+                    P:SendBroadcastMessage('|cff00ff00Has comprado ' .. input .. '× ' .. item_link .. ' |cff00ff00por |cffff00ff' .. pago)
 
                     WorldDBExecute( QQ.INSERT_INTO_LOG(playerID, item_id, input, amount) )
                 end
-                U:SendUnitSay(P:GetName() .. ' ha comprado ' .. input .. ' ' .. item_link, 0)
+                U:SendUnitSay(P:GetName() .. ' ha comprado ' .. input .. '× ' .. item_link, 0)
 
                 WorldDBExecute( QQ.INSERT_OR_UPDATE_FREQUENT_PURCHASE(item_id, item_price, item_maxCount, playerID))
 
