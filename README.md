@@ -23,7 +23,8 @@ Cuando se termina de establecer la configuración deseada, se debe de clickear A
 <img width="1179" height="265" alt="image" src="https://github.com/user-attachments/assets/aa84e479-87e1-4074-84eb-6a97656d511f" /><br>
 <img width="445" height="51" alt="image" src="https://github.com/user-attachments/assets/87fe5168-acde-42c7-9742-355e4e04e38b" /><br>
 
-Lo que sucede en este punto es que se ELIMINA todos los registros de la tabla dedicada e inserta nuevamente aplicando los filtros seleccionados.
+Lo que sucede en este punto es que se ELIMINAN todos los registros de la tabla dedicada y se insertan nuevamente aplicando los filtros seleccionados.<br>
+Esto ejecuta una consulta pesada en la base de datos, pero el sistema no requiere configuración constante.
 
 # 3. Enfoque en experiencia de usuario
 El sistema guarda compras frecuentes que el jugador realiza, esto agiliza enormemente la experiencia y evita que el jugador tenga que escribir constantemente un mismo nombre.
