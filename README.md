@@ -2,7 +2,7 @@ Este Script para AzerothCore ofrece la posibilidad de vender objetos del juego a
 
 Primero se ejecuta el script SQL en la base de datos WORLD, esto agrega los NPCs con los IDs 60000 y 60001, llamados Michael Jackson y Configurador respectivamente.
 
-El Script contiene una LISTA NEGRA de objetos prohibidos que el sistema ingnorará por completo.
+El Script contiene una LISTA NEGRA de objetos prohibidos que el sistema ignorará por completo.
 
 # ¿Por qué este script es eficiente?
 
