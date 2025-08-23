@@ -8,7 +8,7 @@ El Script contiene una LISTA NEGRA de objetos prohibidos que el sistema ignorar�
 
 # 1. Independencia arquitectónica: El sistema usa tablas dedicadas en la base de datos:<br>
 <img width="251" height="129" alt="image" src="https://github.com/user-attachments/assets/e6de13f4-0122-46eb-9574-7b62294b70a2" /><br>
-Esto no interfiere con la tabla item_template e item_template_locale, las cuales, están en constante uso por el Core.<br>
+Esto no interfiere con las tablas item_template e item_template_locale, las cuales, están en constante uso por el Core.<br>
 
 # 2. Configuración total
 
