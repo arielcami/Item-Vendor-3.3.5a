@@ -1,191 +1,255 @@
-
-local MAX_RESULTS = 25
-local FORBIDDEN_CHARACTERS = { '"', "'", '\\', '%', '_', ';', '#', '`', '/', '-', '$', '*' }
+local NPC_ID = 60000
+local MAX_RESULTS = 28
 local ITEMS_IDS, ITEMS_PRICES, ITEMS_MAXCOUNTS, ITEMS_UNIQUES, GLOBAL_RATE_COEFFICIENT, FLAT_PRICE
-local iconOro = "|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:0:0|t"
-local iconPlata = "|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:0:0|t"
-local iconCobre = "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:0:0|t"
-local colorBlanco = "|CFFFFFFFF"
-local finColor = "|r"
+local itemID_for_adding, itemNAME_for_adding, itemBuyPrice_for_adding, itemMaxcount_for_adding
 
-local function formatCurrency(copper)
-    local oro = math.floor(copper / 10000)
-    local plata = math.floor((copper % 10000) / 100)
-    local cobre = copper % 100
-
-    local function formatWithComma(n)
-        local rev = tostring(n):reverse()
-        local withCommas = rev:gsub("(%d%d%d)", "%1,")
-        if withCommas:sub(-1) == "," then
-            withCommas = withCommas:sub(1, -2)
-        end
-        return withCommas:reverse()
+-- Función para escapar caracteres especiales en SQL
+local function escapeSQL(input)
+    if input == nil then
+        return ""
     end
-
-    local partes = {}
-
-    if oro > 0 then
-        table.insert(partes, string.format("%s%s%s%s", colorBlanco, formatWithComma(oro), finColor, iconOro))
-    end
-    if plata > 0 or (cobre > 0 and oro > 0) then
-        table.insert(partes, string.format("%s%d%s%s", colorBlanco, plata, finColor, iconPlata))
-    end
-    if cobre > 0 or (oro == 0 and plata == 0) then
-        table.insert(partes, string.format("%s%d%s%s", colorBlanco, cobre, finColor, iconCobre))
-    end
-    return table.concat(partes, " ")
+    local str = tostring(input)
+    local escapes = {
+        ['\\'] = '\\\\',
+        ['\''] = '\\\'',
+        ['"'] = '\\"',
+        ['\0'] = '\\0',
+        ['\n'] = '\\n',
+        ['\r'] = '\\r',
+        ['\x1a'] = '\\Z'
+    }
+    return (str:gsub("([\\'\"\0\n\r\x1a])", escapes))
 end
 
--- Elegir iconos
-local function ico(sel)
-    return (sel==1) and "|TInterface\\Icons\\inv_misc_spyglass_01:42:42:-21:0|t" or (sel==2) and "|TInterface\\Icons\\inv_inscription_scroll:42:42:-21:0|t" or 
-           (sel==3) and "|TInterface\\Icons\\inv_misc_coin_02:42:42:-21:0|t" 
-end
+-- Función para formatear fecha en español
+local function formatDate(timestamp)
+    local months = {'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'}
+    local days = {'domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'}
 
--- Función para determinar si hay caracteres peligrosos en la entrada
-local function hasForbiddenChars(str)
-    for c in str:gmatch(".") do
-        for _, forbidden in ipairs(FORBIDDEN_CHARACTERS) do
-            if c == forbidden then
-                return true
-            end
-        end
+    local year = tonumber(timestamp:sub(1, 4))
+    local month = tonumber(timestamp:sub(6, 7))
+    local day = tonumber(timestamp:sub(9, 10))
+    local hour = tonumber(timestamp:sub(12, 13))
+    local minute = timestamp:sub(15, 16)
+
+    local dayName = days[tonumber(os.date("%w", os.time({
+        year = year,
+        month = month,
+        day = day
+    }))) + 1]
+    local dayNameCapitalized = dayName:gsub("^%l", string.upper)
+
+    local period = hour >= 12 and "p.m." or "a.m."
+    local hour12 = hour % 12
+    if hour12 == 0 then
+        hour12 = 12
     end
-    return false
+
+    return string.format("%s %d de %s de %d - %d:%s %s", dayNameCapitalized, day, months[month], year, hour12, minute, period)
 end
 
 -- Consultas dinámicas
 local function Query()
-    local q = {
+    return {
         CREATE_ITEM_TABLE = function()
-            return [[CREATE TABLE IF NOT EXISTS a_itemvendor (entry INT UNSIGNED NOT NULL PRIMARY KEY, `name` VARCHAR(80) NOT NULL, 
-            buyPrice INT UNSIGNED NOT NULL, maxCount INT UNSIGNED NOT NULL)]]
+            WorldDBExecute(
+                [[CREATE TABLE IF NOT EXISTS a_itemvendor (entry INT UNSIGNED NOT NULL PRIMARY KEY, `name` VARCHAR(80) NOT NULL, buyPrice INT UNSIGNED NOT NULL, maxCount INT UNSIGNED NOT NULL)]])
         end,
 
         CREATE_LOG_TABLE = function()
-            return [[CREATE TABLE IF NOT EXISTS a_itemvendor_log (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, player_id INT UNSIGNED NOT NULL, 
-                item_id MEDIUMINT UNSIGNED NOT NULL, amount MEDIUMINT UNSIGNED NOT NULL, expense INT UNSIGNED NOT NULL, 
-                purchase_time TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP)]]
+            WorldDBExecute(
+                [[CREATE TABLE IF NOT EXISTS a_itemvendor_log (id INT NOT NULL AUTO_INCREMENT PRIMARY KEY, player_id INT UNSIGNED NOT NULL,
+                item_id MEDIUMINT UNSIGNED NOT NULL, amount MEDIUMINT UNSIGNED NOT NULL, expense INT UNSIGNED NOT NULL,
+                purchase_time TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP)]])
         end,
 
         CREATE_FRECUENT_TABLE = function()
-            return [[CREATE TABLE IF NOT EXISTS a_itemvendor_frecuent (entry INT UNSIGNED NOT NULL, buyPrice INT UNSIGNED NOT NULL, 
-                    maxCount TINYINT UNSIGNED NOT NULL, times INT UNSIGNED NOT NULL DEFAULT '1', 
-                    player_id INT UNSIGNED NOT NULL, UNIQUE KEY uniq_entry_player (entry,player_id))]]
+            WorldDBExecute(
+                [[CREATE TABLE IF NOT EXISTS a_itemvendor_frecuent (entry INT UNSIGNED NOT NULL, buyPrice INT UNSIGNED NOT NULL,
+                maxCount TINYINT UNSIGNED NOT NULL, times INT UNSIGNED NOT NULL DEFAULT '1', player_id INT UNSIGNED NOT NULL,
+                UNIQUE KEY uniq_entry_player (entry,player_id))]])
         end,
 
-        CREATE_FIXED_AMOUNT_TABLE = function ()
-            return [[CREATE TABLE IF NOT EXISTS a_itemvendor_fixed_amount (amount INT UNSIGNED PRIMARY KEY DEFAULT 10000)]]
+        CREATE_FIXED_AMOUNT_TABLE = function()
+            WorldDBExecute(
+                "CREATE TABLE IF NOT EXISTS a_itemvendor_fixed_amount (amount INT UNSIGNED PRIMARY KEY DEFAULT 10000)")
         end,
 
-        CREATE_GLOBAL_RATE_TABLE = function ()
-            return [[CREATE TABLE IF NOT EXISTS a_itemvendor_global_rate (rate TINYINT UNSIGNED PRIMARY KEY DEFAULT 1)]]
+        CREATE_GLOBAL_RATE_TABLE = function()
+            WorldDBExecute(
+                "CREATE TABLE IF NOT EXISTS a_itemvendor_global_rate (rate TINYINT UNSIGNED PRIMARY KEY DEFAULT 1)")
+        end,
+
+        CREATE_BLACKLIST_TABLE = function()
+            WorldDBExecute(
+                [[CREATE TABLE IF NOT EXISTS a_itemvendor_blacklist (id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY)]])
+        end,
+
+        PUPULATE_BLACKLIST_TABLE = function()
+            WorldDBExecute(
+                [[INSERT IGNORE INTO a_itemvendor_blacklist (id) VALUES (24477),(24476),(33470),(21877),(28430),(40553),(41257),(41383),(41384),(44926), 
+            (44948),(30732),(30724),(31318),(34622),(31342),(31322),(31336),(31334),(31332),(31331),(31323),(20698),(45173),(45172),(45174),(45175),(38497), 
+            (38496),(38498),(27965),(34025),(34030),(37126),(28388),(28389),(17882),(17887),(22023),(22024),(22584),(29841),(29868),(29871),(14891),(1442), 
+            (26173),(26174),(26175),(26180),(26235),(26324),(26368),(26372),(26464),(26465),(26548),(26655),(26738),(26792),(26843),(27196),(27218),(37301), 
+            (38292),(39163),(45575),(138),(931),(2275),(2588),(2599),(3884),(3934),(5632),(40754),(40948),(43336),(43337),(43384),(31266),(27774),(27811), 
+            (28117),(28122),(41403),(41404),(41405),(41406),(41407),(41408),(41409),(41410),(41411),(41412),(41413),(41414),(41415),(41416),(41417),(41418), 
+            (41419),(41420),(41421),(41422),(41423),(43362),(45908),(21038),(32722),(33226),(34062),(34599),(38294),(38518),(42986),(43523),(46783),(54822), 
+            (52252),(996),(1020),(1021),(1024),(1025),(1027),(1162),(5235)]])
+        end,
+
+        BLACKLIST_TABLE_IS_EMPTY = function()
+            local sql = WorldDBQuery("SELECT 1 FROM a_itemvendor_blacklist LIMIT 1")
+            local ret
+            if sql then
+                -- IS FULL
+                ret = false
+            else
+                -- IS EMPTY
+                ret = true
+            end
+            return ret
         end,
 
         INSERT_INTO_LOG = function(player_id, item_id, amount, expense)
-            return string.format("INSERT INTO a_itemvendor_log (player_id, item_id, amount, expense) VALUES (%d, %d, %d, %d)",
-                player_id, item_id, amount, expense)
+            WorldDBExecute(string.format(
+                "INSERT INTO a_itemvendor_log (player_id, item_id, amount, expense) VALUES (%d, %d, %d, %d)", player_id,
+                item_id, amount, expense))
         end,
 
         INSERT_OR_UPDATE_FREQUENT_PURCHASE = function(entry, buyPrice, maxCount, player_id)
-            return string.format("INSERT INTO a_itemvendor_frecuent (entry, buyPrice, maxCount, times, player_id) " ..
-                "VALUES (%d, %d, %d, 1, %d) ON DUPLICATE KEY UPDATE times = times + 1", entry, buyPrice, maxCount, player_id)
+            WorldDBExecute(string.format(
+                "INSERT INTO a_itemvendor_frecuent (entry, buyPrice, maxCount, times, player_id) VALUES (%d, %d, %d, 1, %d) ON DUPLICATE KEY UPDATE times = times + 1",
+                entry, buyPrice, maxCount, player_id))
         end,
 
-        INSERT_DEFAULT_FIXED_AMOUNT = function ()
-            return [[INSERT INTO a_itemvendor_fixed_amount VALUES ()]]
+        INSERT_DEFAULT_FIXED_AMOUNT = function()
+            WorldDBExecute("INSERT INTO a_itemvendor_fixed_amount VALUES ()")
         end,
 
-        INSERT_DEFAULT_GLOBAL_RATE = function ()
-            return [[INSERT INTO a_itemvendor_global_rate VALUES ()]]
+        INSERT_DEFAULT_GLOBAL_RATE = function()
+            WorldDBExecute("INSERT INTO a_itemvendor_global_rate VALUES ()")
         end,
 
-        SELECT_ITEM_BY_NAME = function(name)
-            return string.format("SELECT * FROM a_itemvendor WHERE `name` LIKE '%%%s%%' LIMIT %d", name, (MAX_RESULTS > 30 and 30 or MAX_RESULTS))
+        INSERT_NPC = function(entry)
+            local statement_1 =
+                [[INSERT IGNORE INTO creature_template (entry, difficulty_entry_1, difficulty_entry_2, difficulty_entry_3, KillCredit1,
+            KillCredit2, `name`, subname, IconName, gossip_menu_id, minlevel, maxlevel, `exp`, faction, npcflag, speed_walk, speed_run, speed_swim,
+            speed_flight, detection_range, scale, `rank`, dmgschool, DamageModifier, BaseAttackTime, RangeAttackTime, BaseVariance, RangeVariance,
+            unit_class, unit_flags, unit_flags2, dynamicflags, family, trainer_type, trainer_spell, trainer_class, trainer_race, `type`,
+            type_flags, lootid, pickpocketloot, skinloot, PetSpellDataId, VehicleId, mingold, maxgold, AIName, MovementType, HoverHeight, HealthModifier,
+            ManaModifier, ArmorModifier, ExperienceModifier, RacialLeader, movementId, RegenHealth, mechanic_immune_mask, spell_school_immune_mask,
+            flags_extra, ScriptName, VerifiedBuild) VALUES ]]
+
+            local statement_2 =
+                "INSERT IGNORE INTO creature_template_model (CreatureID, Idx, CreatureDisplayID, DisplayScale, Probability, VerifiedBuild) VALUES "
+
+            WorldDBExecute(statement_1 .. [[(]] .. entry .. [[,0,0,0,0,0,'Michael Jackson','Vendedor de Objetos',NULL,0,83,83,2,35,1,1,1,1,1,20,1,3,0,1,2000,2000,1,1,8,0,0,0,0,0,0,0,0,7,4,0,0,0,0,0,0,0,'',0,1,450,450,4,1,0,0,1,0,0,0,'',12340)]])
+            WorldDBExecute(statement_2 .. [[(]] .. entry .. [[, 0, 16540, 1, 1, 12340)]])
         end,
 
-        SELECT_FRECUENT_PURCHASES_BY_PLAYER_ID = function(player_id)
-            return string.format("SELECT * FROM a_itemvendor_frecuent WHERE player_id = %d ORDER BY times DESC LIMIT 15", player_id)
+        LOOK_FOR_ITEM_BY_NAME_OR_PART = function(name_or_part)
+            local escapedName = escapeSQL(name_or_part)
+            local sql = WorldDBQuery(string.format(
+                "SELECT entry, buyPrice, maxCount FROM a_itemvendor WHERE `name` LIKE '%%%s%%' LIMIT %d", escapedName,
+                (MAX_RESULTS > 30 and 30 or MAX_RESULTS)))
+            if sql then
+                local result = {}
+                repeat
+                    table.insert(result, {sql:GetUInt32(0), sql:GetUInt32(1), sql:GetUInt32(2)})
+                until not sql:NextRow();
+                return result
+            else
+                return nil
+            end
         end,
 
-        SELECT_ONE_BY_ENTRY = function(entry)
-            return string.format("SELECT 1 FROM a_itemvendor WHERE entry = %d LIMIT 1", entry)
+        GET_FRECUENT_PURCHASES_BY_PLAYER_ID = function(player_id)
+            local sql = WorldDBQuery(string.format(
+                "SELECT * FROM a_itemvendor_frecuent WHERE player_id = %d ORDER BY times DESC LIMIT " .. MAX_RESULTS,
+                player_id))
+            return sql
         end,
 
-        SELECT_GLOBAL_RATE = function()
+        GET_GLOBAL_RATE = function()
             local query = WorldDBQuery("SELECT rate FROM a_itemvendor_global_rate")
             return query:GetUInt8(0)
         end,
 
-        SELECT_FLAT_AMOUNT_BUYPRICE = function()
-            local query = WorldDBQuery("SELECT amount FROM a_itemvendor_fixed_amount")
-            return query:GetUInt32(0)
+        GET_FLAT_AMOUNT_BUYPRICE = function()
+            local query = (WorldDBQuery("SELECT amount FROM a_itemvendor_fixed_amount")):GetUInt32(0)
+            return query
         end,
 
-        UPDATE_ITEM_BUY_PRICE = function(input, option)
-            return string.format("UPDATE a_itemvendor SET buyPrice = %d WHERE `entry` = %d", input, option)
+        VENDOR_TABLE_IS_EMPTY = function()
+            local sql = WorldDBQuery("SELECT 1 FROM a_itemvendor LIMIT 1")
+            local ret
+            if sql then
+                ret = false
+            else
+                ret = true
+            end
+            return ret
         end,
 
-        DELETE_ONE_BY_ENTRY = function (entry)
-            return string.format("DELETE FROM a_itemvendor WHERE entry = %d", entry)
+        FIXED_BUYPRICE_AMOUNT_EXISTS = function()
+            local sql = (WorldDBQuery("SELECT 1 FROM a_itemvendor_fixed_amount LIMIT 1")):GetUInt8(0) == 1 and true or
+                            false
+            return sql
         end,
 
-        CHECK_IF_TABLE_IS_POPULATED = function ()
-            return "SELECT 1 FROM a_itemvendor LIMIT 1"
+        PLAYER_HAS_LOG = function(player_id)
+            local sql = WorldDBQuery(string.format("SELECT 1 FROM a_itemvendor_log WHERE player_id = %d", player_id))
+            return sql and true or false
         end,
 
-        CHECK_IF_FIXED_AMOUNT_EXISTS = function ()
-            return "SELECT 1 FROM a_itemvendor_fixed_amount LIMIT 1"
+        GET_LAST_ITEMS_FROM_LOG = function(player_id)
+            local sql = WorldDBQuery(string.format(
+                "SELECT amount, item_id, purchase_time, expense FROM a_itemvendor_log WHERE player_id = %d ORDER BY purchase_time DESC LIMIT " ..
+                    MAX_RESULTS, player_id))
+            return sql
         end,
 
-        SELECT_ONE_FROM_LOG_BY_PLAYER_ID = function (player_id)
-            return string.format("SELECT 1 FROM a_itemvendor_log WHERE player_id = %d", player_id)
+        NPC_EXISTS = function()
+            local sql = WorldDBQuery(string.format("SELECT 1 FROM creature_template WHERE entry = %d", NPC_ID))
+            return sql and true or false
         end,
 
-        SELECT_LAST_20_FROM_LOG_BY_PLAYER_ID = function(player_id)
-            return string.format("SELECT amount, item_id, purchase_time, expense FROM a_itemvendor_log WHERE player_id = %d ORDER BY purchase_time DESC LIMIT 20", player_id)
+        FIND_ONE = function(entry)
+            local sql = WorldDBQuery(string.format('SELECT * from a_itemvendor WHERE entry = %d', entry))
+            return sql and sql or false
         end,
 
-        SELECT_BUYPRICE_AND_MAXCOUNT_BY_ITEM_ENTRY = function (item_entry)
-            return string.format("SELECT BuyPrice, maxcount FROM item_template WHERE entry = %d", item_entry)
+        FIND_ONE_ITEM_TEMPLATE = function(entry)
+            local sql = WorldDBQuery(string.format(
+                'SELECT entry, BuyPrice, maxcount from item_template WHERE entry = %d', entry))
+            return sql and {sql:GetUInt32(0), sql:GetUInt32(1), sql:GetUInt32(2)} or false
         end,
 
-        SELECT_BUYPRICE_BY_ITEM_ENTRY = function (item_entry)
-            return string.format("SELECT buyPrice FROM a_itemvendor WHERE entry = %d", item_entry)
+        UPDATE_ITEM_BUYPRICE = function(entry, new_price)
+            local get = WorldDBQuery('SELECT * from a_itemvendor WHERE entry = ' .. entry)
+            local result = false
+            if get then
+                WorldDBExecute(string.format('UPDATE a_itemvendor SET buyPrice = %d WHERE entry = %d', new_price, entry))
+                result = true
+            end
+            return result
         end,
 
-        SELECT_ITEM_ENTRY_BY_ITEM_ENTRY = function (item_entry)
-            return string.format("SELECT entry FROM a_itemvendor WHERE entry = %d", item_entry)
+        INSERT_ITEM_IN_VENDOR_TABLE = function(entry, name, buyprice, maxcount)
+            local escapedName = escapeSQL(name)
+            local sql = string.format(
+                'INSERT INTO a_itemvendor (entry, `name`, buyPrice, maxCount) VALUES (%d, "%s", %d, %d)', entry,
+                escapedName, buyprice, maxcount)
+            WorldDBExecute(sql)
+        end,
+
+        DELETE_ITEM_FROM_VENDOR_TABLE = function(entry)
+            WorldDBExecute('DELETE FROM a_itemvendor WHERE entry = ' .. entry)
         end
     }
-    return q
 end
 
-local QQ = Query()
-
-local function CLICK_1(e, P, U)
-
-    local fixed_amount_exists = WorldDBQuery(QQ.CHECK_IF_FIXED_AMOUNT_EXISTS())
-
-    if not fixed_amount_exists then
-        WorldDBExecute(QQ.INSERT_DEFAULT_FIXED_AMOUNT())
-        WorldDBExecute(QQ.INSERT_DEFAULT_GLOBAL_RATE())
-    end
-
-    local table_is_populated = WorldDBQuery( QQ.CHECK_IF_TABLE_IS_POPULATED() ) 
-
-    if not table_is_populated then
-        P:SendBroadcastMessage('|CFFff0000El sistema necesita configuración. No se encontraron registros de objetos.')
-        return
-    end
-
-    P:GossipMenuAddItem(8, ico(1) .. 'Buscar un objeto', 0, 0, true, 'Ingresa parte del nombre del objeto...')
-    P:GossipMenuAddItem(8, ico(3) .. 'Comprados frecuentemente', 5, 0)    
-    P:GossipMenuAddItem(8, ico(2) .. 'Ver registro de compras (20)', 4, 0)
-    P:GossipSendMenu(1, U)
-    
-end
-
+local DB = Query()
 
 local function getIcon(item_id)
     local ItemTemplate = GetItemTemplate(item_id)
@@ -194,222 +258,371 @@ local function getIcon(item_id)
     return string.format(icon_base, icon)
 end
 
+local function getIconBig(item_id)
+    local ItemTemplate = GetItemTemplate(item_id)
+    local icon = ItemTemplate:GetIcon()
+    local icon_base = "|TInterface\\Icons\\%s:45:45:-22|t"
+    return string.format(icon_base, icon)
+end
 
-local function CLICK_2(e, P, U, send, option, raw_input)
+local function formatCurrency(copper)
+    local oro = math.floor(copper / 10000)
+    local plata = math.floor((copper % 10000) / 100)
+    local cobre = copper % 100
+    local path = "|TInterface\\MoneyFrame\\"
+    local parts = {}
 
-    FLAT_PRICE = QQ.SELECT_FLAT_AMOUNT_BUYPRICE();
-    GLOBAL_RATE_COEFFICIENT = QQ.SELECT_GLOBAL_RATE();
+    local function formatNumber(n)
+        return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+    end
 
-    -- Regresar a la búsqueda de objetos
-    if (send == 6) and (option == 0) then
-        CLICK_1(1, P, U)
+    if oro > 0 then
+        table.insert(parts, "|CFFFFFFFF" .. formatNumber(oro) .. "|r" .. path .. "UI-GoldIcon:0:0:2:0|t")
+    end
+    if plata > 0 or (cobre > 0 and oro > 0) then
+        table.insert(parts, "|CFFFFFFFF" .. plata .. "|r" .. path .. "UI-SilverIcon:0:0:2:0|t")
+    end
+    if cobre > 0 or (oro == 0 and plata == 0) then
+        table.insert(parts, "|CFFFFFFFF" .. cobre .. "|r" .. path .. "UI-CopperIcon:0:0:2:0|t")
+    end
+    return table.concat(parts, " ")
+end
+
+-- Elegir iconos
+local function ico(sel)
+    return (sel == 1) and "|TInterface\\Icons\\inv_misc_spyglass_01:42:42:-21:0|t" or (sel == 2) and
+        "|TInterface\\Icons\\inv_inscription_scroll:42:42:-21:0|t" or (sel == 3) and
+        "|TInterface\\Icons\\inv_misc_coin_02:42:42:-21:0|t" or (sel == 4) and
+        "|TInterface\\Icons\\spell_holy_stoicism:42:42:-21:0|t" or (sel == 5) and
+        "|TInterface\\Icons\\inv_enchant_shardglowingsmall:42:42:-21:0|t" or (sel == 6) and
+        "|TInterface\\Icons\\spell_shadow_sacrificialshield:42:42:-21:0|t"
+end
+
+local function extractName(link)
+    if type(link) ~= "string" then
+        return nil
+    end
+    return link:match("%[(.-)%]")
+end
+
+local function cleanAndConvert(input)
+    return math.max(0, math.floor(tonumber(input) or 0))
+end
+
+-- Centralized cache to prevent data overlap between players
+local playerVendorCache = {}
+
+-- Helper function to get or initialize a player's specific cache
+local function GetPlayerCache(player)
+    local guid = player:GetGUIDLow()
+    if not playerVendorCache[guid] then
+        playerVendorCache[guid] = {
+            searchResults   = { ids = {}, prices = {}, maxCounts = {}, uniques = {} },
+            pendingItem     = { id = 0, name = "", price = 0, maxCount = 0 }
+        }
+    end
+    return playerVendorCache[guid]
+end
+
+---------------------------
+-- MAIN GOSSIP MENU (CLICK_1)
+---------------------------
+local function CLICK_1(event, player, creature)
+    -- Initialize or reset search results when opening the main menu
+    local cache = GetPlayerCache(player)
+    cache.searchResults = {
+        ids = {},
+        prices = {},
+        maxCounts = {},
+        uniques = {}
+    }
+
+    if DB.VENDOR_TABLE_IS_EMPTY() then
+        player:SendBroadcastMessage('|CFFff0000El sistema necesita configuración antes de ejecutarse.')
+        player:GossipComplete()
         return
     end
 
-    -- Compras frecuentes
-    if (send == 5 and option == 0) then
-    
-        local Q = QQ.SELECT_FRECUENT_PURCHASES_BY_PLAYER_ID(P:GetGUIDLow())
-        local frecuently_bought_items = WorldDBQuery(Q);
+    player:GossipMenuAddItem(8, ico(1) .. 'Buscar un objeto', 0, 0, true, 'Ingresa parte del nombre del objeto...')
+    player:GossipMenuAddItem(8, ico(3) .. 'Comprados frecuentemente', 1, 0)
+    player:GossipMenuAddItem(8, ico(2) .. string.format('Ver registro de compras (%d)', MAX_RESULTS), 2, 0)
 
-        if frecuently_bought_items then
+    if player:IsGM() then
+        player:GossipMenuAddItem(8, ico(4) .. 'Editar precio de un objeto', 3, 0, true, "Ingresa el |cffffff00ID|r del objeto a editar:\n(Solo números enteros positivos)")
+        player:GossipMenuAddItem(8, ico(5) .. 'Añadir un objeto', 4, 0, true, "Ingresa el |cffffff00ID|r del objeto a agregar:\n(Solo números enteros positivos) ")
+        player:GossipMenuAddItem(8, ico(6) .. 'Eliminar un objeto', 5, 0, true, "Ingresa el |cffffff00ID|r del objeto a eliminar:\n(Solo números enteros positivos)")
+    end
 
-            -- Pasamos agua, jabón y lejía
-            ITEMS_IDS       = {}
-            ITEMS_PRICES    = {}
-            ITEMS_MAXCOUNTS = {}
-            ITEMS_UNIQUES   = {}
-            
-            local conteo = 1
+    player:GossipSendMenu(1, creature)
+end
 
-            P:SendBroadcastMessage('Mostrando compras frecuentes de ' .. P:GetName()..'.')
-            
+---------------------------
+-- OPTION HANDLER (CLICK_2)
+---------------------------
+local function CLICK_2(event, player, creature, sender, intId, rawInput)
+    local cache = GetPlayerCache(player)
+
+    FLAT_PRICE = DB.GET_FLAT_AMOUNT_BUYPRICE();
+    GLOBAL_RATE_COEFFICIENT = DB.GET_GLOBAL_RATE();
+
+    -- 1. NAVIGATION: RETURN
+    if sender == 6 then
+        CLICK_1(event, player, creature)
+        return
+    end
+
+    -- 2. DELETE ITEM LOGIC (GM)
+    if sender == 5 and intId == 0 then
+        local entry = cleanAndConvert(rawInput)
+        if entry > 0 then
+            if DB.FIND_ONE(entry) then
+                DB.DELETE_ITEM_FROM_VENDOR_TABLE(entry)
+                player:SendBroadcastMessage('|CFF00FF00Se eliminó correctamente: ' .. GetItemLink(entry, 7))
+            else
+                player:SendBroadcastMessage('|CFFFF0000Error: El objeto no está en la lista del vendedor.')
+            end
+        end
+        CLICK_1(event, player, creature)
+        return
+    end
+
+    -- 3. CONFIRM ADD ITEM (GM)
+    if sender == 4 and intId > 0 then
+        DB.INSERT_ITEM_IN_VENDOR_TABLE(cache.pendingItem.id, cache.pendingItem.name, cache.pendingItem.price,
+            cache.pendingItem.maxCount)
+        player:SendBroadcastMessage('|CFF00FF00¡Objeto agregado correctamente!')
+        CLICK_1(event, player, creature)
+        return
+    end
+
+    -- 4. SEARCH ITEM TO ADD (GM)
+    if sender == 4 and intId == 0 then
+        local itemId = cleanAndConvert(rawInput)
+        local itemTemplate = DB.FIND_ONE_ITEM_TEMPLATE(itemId)
+
+        if not itemTemplate then
+            player:SendBroadcastMessage('|CFFFF0000Error: El objeto no existe en la DB del servidor.')
+        elseif DB.FIND_ONE(itemId) then
+            player:SendBroadcastMessage('|CFFFF0000Error: El objeto ya está en la lista del vendedor.')
+        else
+            local itemLink = GetItemLink(itemId, 7)
+            player:GossipClearMenu()
+            player:SendBroadcastMessage('|CFF00FF00Objeto encontrado: ' .. itemLink)
+
+            -- Store in player's pending cache (indexed by GUID)
+            cache.pendingItem = {
+                id = itemId,
+                name = extractName(itemLink),
+                price = itemTemplate[2],
+                maxCount = itemTemplate[3]
+            }
+
+            player:GossipMenuAddItem(0, getIconBig(itemId) .. "|CFF0073ff[ACEPTAR AÑADIR]", 4, itemId)
+            player:GossipSendMenu(1, creature)
+            return
+        end
+        CLICK_1(event, player, creature)
+        return
+    end
+
+    -- 5. CONFIRM EDIT PRICE (GM)
+    if sender == 3 and intId > 0 then
+        local newPrice = cleanAndConvert(rawInput)
+        if DB.UPDATE_ITEM_BUYPRICE(intId, newPrice) then
+            player:SendBroadcastMessage('|CFF00FF00¡Precio actualizado correctamente!')
+        else
+            player:SendBroadcastMessage('|CFFFF0000Error al actualizar precio.')
+        end
+        CLICK_1(event, player, creature)
+        return
+    end
+
+    -- 6. SEARCH ITEM TO EDIT (GM)
+    if sender == 3 and intId == 0 then
+        local entry = cleanAndConvert(rawInput)
+        local itemData = DB.FIND_ONE(entry)
+
+        if itemData then
+            player:GossipClearMenu()
+            local itemId = itemData:GetUInt32(0)
+            local itemName = itemData:GetString(1)
+            local currentPrice = itemData:GetUInt32(2)
+
+            player:GossipMenuAddItem(0, getIconBig(itemId) .. itemName .. ": " .. formatCurrency(currentPrice), 3, itemId, true, 'Escribe el nuevo precio en cobre:')
+            player:GossipSendMenu(1, creature)
+        else
+            player:SendBroadcastMessage('|CFFFF0000Objeto no encontrado en el vendedor.')
+            CLICK_1(event, player, creature)
+        end
+        return
+    end
+
+    -- 7. FREQUENT PURCHASES
+    if sender == 1 and intId == 0 then
+        local results = DB.GET_FRECUENT_PURCHASES_BY_PLAYER_ID(player:GetGUIDLow())
+        if results then
+            player:GossipClearMenu()
+
+            -- Reset search results for this player
+            cache.searchResults = { ids = {}, prices = {}, maxCounts = {}, uniques = {} }
+
+            local counter = 1
             repeat
-                local item_entry    = frecuently_bought_items:GetUInt32(0);
-                local item_buyprice = (frecuently_bought_items:GetUInt32(1) == 0) and FLAT_PRICE or frecuently_bought_items:GetUInt32(1);
-                local item_maxcount = frecuently_bought_items:GetUInt32(2);
-                local item_unique   = (item_maxcount == 1) and true or false
-                local item_link     = GetItemLink(item_entry, 7)
-                local price_show    = formatCurrency(item_buyprice * GLOBAL_RATE_COEFFICIENT);
+                local itemId = results:GetUInt32(0)
+                local buyPrice = (results:GetUInt32(1) == 0) and FLAT_PRICE or results:GetUInt32(1)
+                local maxCount = results:GetUInt32(2)
+                local itemLink = GetItemLink(itemId, 7)
+                local priceDisplay = formatCurrency(buyPrice * GLOBAL_RATE_COEFFICIENT)
 
-                P:GossipMenuAddItem(0, getIcon(item_entry).. item_link .. ' |cff752f00' .. price_show, item_entry, conteo, true, 'Ingresa la cantidad que quieres comprar.')
+                table.insert(cache.searchResults.ids, itemId)
+                table.insert(cache.searchResults.prices, buyPrice)
+                table.insert(cache.searchResults.maxCounts, maxCount)
+                table.insert(cache.searchResults.uniques, (maxCount == 1))
 
-                table.insert(ITEMS_IDS, item_entry)
-                table.insert(ITEMS_PRICES, item_buyprice)
-                table.insert(ITEMS_MAXCOUNTS, item_maxcount)
-                table.insert(ITEMS_UNIQUES, item_unique)
-                P:SendBroadcastMessage(conteo .. '. ' .. item_link) -- .. ' ' .. price_show)
-                conteo = conteo + 1 
+                player:GossipMenuAddItem(0, getIcon(itemId) .. itemLink .. ' |cff752f00' .. priceDisplay, itemId, counter, true, 'Ingresa la cantidad:')
+                counter = counter + 1
+            until not results:NextRow()
 
-            until not frecuently_bought_items:NextRow();
-
-            P:GossipMenuAddItem(0, '< Regresar a la búsqueda', 6, 0)
-            P:GossipSendMenu(1, U)
-        else    
-            P:GossipComplete();
-            P:SendBroadcastMessage('|cffff0000No tienes registros de compras frecuentes.')
+            player:GossipMenuAddItem(0, '<< Regresar', 6, 0)
+            player:GossipSendMenu(1, creature)
+        else
+            player:SendBroadcastMessage('|cffff0000No tienes registros frecuentes.')
+            player:GossipComplete()
         end
         return
     end
 
-    -- Ver registros
-    if (send == 4) then
-        if (option == 0) then
-            local playerID = P:GetGUIDLow()
-            local check_log = WorldDBQuery( QQ.SELECT_ONE_FROM_LOG_BY_PLAYER_ID(playerID) );
+    -- 8. VIEW PURCHASE LOG
+    if sender == 2 and intId == 0 then
+        local playerGuid = player:GetGUIDLow()
+        if DB.PLAYER_HAS_LOG(playerGuid) then
+            local log = DB.GET_LAST_ITEMS_FROM_LOG(playerGuid)
+            local counter = 1
+            local y = '|cff8fd1c4'
+            player:SendBroadcastMessage(y .. 'Últimos registros de ' .. player:GetName() .. ':')
+            repeat
+                local amount = log:GetUInt32(0)
+                local itemId = log:GetUInt32(1)
+                local rawDate = log:GetString(2)
+                local date = formatDate(rawDate)
+                local expense = formatCurrency(log:GetUInt32(3))
+                local msg = string.format('%s' .. counter .. '%s. ' .. GetItemLink(itemId, 7) .. '%s×' .. amount .. '%s por ' .. expense .. '%s - ' .. date, y, y, y, y, y)
+                player:SendBroadcastMessage(msg)
+                counter = counter + 1
+            until not log:NextRow()
+        else
+            player:SendBroadcastMessage('|cffff0000No hay registros de compras.')
+        end
+        player:GossipComplete()
+        return
+    end
 
-            if check_log then
-                local Q = WorldDBQuery( QQ.SELECT_LAST_20_FROM_LOG_BY_PLAYER_ID(playerID) )
+    -- 9. ITEM SEARCH (BY NAME)
+    if sender == 0 and intId == 0 then
+        local searchTerm = escapeSQL(rawInput)
 
-                P:SendBroadcastMessage('Mostrando los últimos registros de ' .. P:GetName() .. '.')
+        local queryData = DB.LOOK_FOR_ITEM_BY_NAME_OR_PART(searchTerm)
 
-                local counter = 1
-                repeat
-                    local cantidad = Q:GetUInt32(0)
-                    local itemID = Q:GetUInt32(1)
-                    local fecha = Q:GetString(2)
-                    local gasto = formatCurrency(Q:GetUInt32(3))
+        if queryData then
+            player:GossipClearMenu()
 
-                    P:SendBroadcastMessage(counter .. '. ' .. cantidad .. '× '..  GetItemLink(itemID, 7) .. ' por ' .. gasto .. ' / '   .. fecha)
-                    counter = counter + 1
-                until not Q:NextRow();
+            -- Reset search results for this player
+            cache.searchResults = { ids = {}, prices = {}, maxCounts = {}, uniques = {} }
+
+            local counter = 1
+
+            for _, row in ipairs(queryData) do
+                local itemId = row[1]
+                local buyPrice = (row[2] == 0) and FLAT_PRICE or row[2]
+                local maxCount = row[3]
+                local priceDisplay = formatCurrency(buyPrice * GLOBAL_RATE_COEFFICIENT)
+                local itemLink = GetItemLink(itemId, 7)
+
+                table.insert(cache.searchResults.ids, itemId)
+                table.insert(cache.searchResults.prices, buyPrice)
+                table.insert(cache.searchResults.maxCounts, maxCount)
+                table.insert(cache.searchResults.uniques, (maxCount == 1))
+
+                player:GossipMenuAddItem(0, getIcon(itemId) .. itemLink .. ' |cff752f00' .. priceDisplay, itemId, counter, true, 'Ingresa la cantidad:')
+                player:SendBroadcastMessage(counter .. '. ' .. itemLink .. ' ' .. priceDisplay)
+                counter = counter + 1
+            end
+            player:GossipMenuAddItem(0, '<< Regresar', 6, 0)
+            player:GossipSendMenu(1, creature)
+        else
+            player:SendBroadcastMessage(string.format('No se encontraron resultados para "|CFF00FF00%s|r".', rawInput))
+            player:GossipComplete()
+        end
+        return
+    end
+
+    -- 10. PURCHASE EXECUTION
+    if intId > 0 and intId <= #cache.searchResults.ids then
+        local itemId = cache.searchResults.ids[intId]
+        local itemPrice = cache.searchResults.prices[intId]
+        local isUnique = cache.searchResults.uniques[intId]
+        local maxCount = cache.searchResults.maxCounts[intId]
+
+        local desiredQuantity = cleanAndConvert(rawInput)
+        if desiredQuantity < 1 then
+            player:SendBroadcastMessage('|cffff0000Ingresa un número válido.')
+            player:GossipComplete()
+            return
+        end
+
+        if desiredQuantity > 200 then
+            desiredQuantity = 200
+        end
+
+        -- Verificar objeto único antes de intentar comprar
+        if isUnique and player:HasItem(itemId) then
+            player:SendBroadcastMessage('|cffff0000Ya posees este objeto único.')
+            player:GossipComplete()
+            return
+        end
+
+        local addedCount = 0
+        local totalCost = 0
+        local itemCost = itemPrice * GLOBAL_RATE_COEFFICIENT
+
+        for i = 1, desiredQuantity do
+            if player:AddItem(itemId, 1) then
+                addedCount = addedCount + 1
+                totalCost = totalCost + itemCost
             else
-                P:SendBroadcastMessage('|cffff0000Aún no has comprado ningún objeto.')
+                -- No hay más espacio, salir del bucle
+                break
             end
         end
-        P:GossipComplete()
-        return
-    end
 
+        if addedCount > 0 then
+            player:ModifyMoney(-totalCost)
+            player:SendBroadcastMessage('|CFF00FF00Comprado: ' .. addedCount .. '× ' .. GetItemLink(itemId, 7) .. ' |CFF00FF00por ' .. formatCurrency(totalCost) .. '.')
+            DB.INSERT_INTO_LOG(player:GetGUIDLow(), itemId, addedCount, totalCost)
+            DB.INSERT_OR_UPDATE_FREQUENT_PURCHASE(itemId, itemPrice, maxCount, player:GetGUIDLow())
+            creature:SendUnitSay(player:GetName() .. ' ha comprado ' .. addedCount .. '× ' .. GetItemLink(itemId, 7) .. '.', 0)
 
-    -- Checkear la entrada por caracteres maliciosos
-    if hasForbiddenChars(raw_input) then
-        P:SendBroadcastMessage('|cffff0000[Error]: No se puede realizar la búsqueda con esos caracteres.')
-        P:GossipComplete()
-        return
-    else
-        -- Búsqueda de objeto
-        if (send + option == 0) then
-            -- El NPC avisa al jugador que ha iniciado la busqueda con las palabras clave
-            U:SendUnitSay('Buscando "' .. raw_input .. '" para ' .. P:GetName() .. '...', 0)
-
-            local Q = WorldDBQuery( QQ.SELECT_ITEM_BY_NAME(raw_input));
-
-            local conteo = 1
-
-            if Q then
-                P:SendBroadcastMessage('Mostrando resultados para "|cff00ff00' .. raw_input .. '|r"')
-
-                -- Pasamos agua, jabón y lejía
-                ITEMS_IDS       = {}
-                ITEMS_PRICES    = {}
-                ITEMS_MAXCOUNTS = {}
-                ITEMS_UNIQUES   = {}
-
-                repeat -- Bloque iterativo
-                    -- 0:entry, 1:name (NO SE USA), 2:buyPrice, 3:maxCount
-                    local item_entry    = Q:GetUInt32(0)
-                    local item_buyPrice = (Q:GetUInt32(2) == 0) and FLAT_PRICE or Q:GetUInt32(2)
-                    local item_maxCount = Q:GetUInt32(3)
-                    local price_show    = formatCurrency(item_buyPrice * GLOBAL_RATE_COEFFICIENT);
-                    local isUnique      = (item_maxCount == 1) and true or false
-                    local item_link     = GetItemLink(item_entry, 7);
-
-                    P:GossipMenuAddItem(0, getIcon(item_entry) .. item_link .. ' |cff752f00' .. price_show .. '|r', item_entry, conteo, true, 'Ingresa la cantidad que quieres comprar.')
-
-                    -- print(item_link)
-
-                    -- Guardamos los precios solamente de los objetos que se mostrarán en el diálogo final.
-                    table.insert(ITEMS_IDS, item_entry)
-                    table.insert(ITEMS_PRICES, item_buyPrice)
-                    table.insert(ITEMS_MAXCOUNTS, item_maxCount)
-                    table.insert(ITEMS_UNIQUES, isUnique)       
-
-                    P:SendBroadcastMessage(conteo .. '. ' .. item_link .. ' ' .. price_show)                   
-                    conteo = conteo + 1
-                until not Q:NextRow();
-
-                local plural = (conteo <= 2) and 'encontró un objeto' or 'encontraron ' .. (conteo - 1) .. ' objetos '
-
-                P:SendBroadcastMessage('--------- Se ' .. plural .. ' ------------')
-                P:GossipMenuAddItem(0, '< Regresar a la búsqueda', 6, 0)
-                P:GossipSendMenu(1, U)
-            else
-                P:SendBroadcastMessage('No se encontraron resultados...')
-                P:GossipComplete()
-                return
+            if addedCount < desiredQuantity then
+                player:SendBroadcastMessage('|cffff6600Solo se pudieron agregar ' .. addedCount .. ' de ' .. desiredQuantity .. ' objetos por falta de espacio.')
             end
+        else
+            player:SendBroadcastMessage('|cffff0000No tienes espacio en el inventario.')
         end
-    end
 
-    -- Lógica de compras
-    if (option > 0) and (option < 10) then
-        local item_id       = send
-        local item_price    = ITEMS_PRICES[option]
-        local item_maxCount = ITEMS_MAXCOUNTS[option]
-        local is_unique     = ITEMS_UNIQUES[option]
-        local item_link     = GetItemLink(item_id, 7)
-
-        P:SendBroadcastMessage('Selección: ' .. item_link)
-        P:SendBroadcastMessage('Precio unitario: ' .. formatCurrency(item_price))
-
-        local input = (tonumber(raw_input) and math.floor(tonumber(raw_input)) >= 1) and math.floor(tonumber(raw_input)) or 0;
-
-        -- Limitamos la entrada a 200 unidades
-        input = (input > 200) and 200 or input
-
-        -- El jugador ingresó un número correcto
-        if (input >= 1) then
-            local player_money = P:GetCoinage();
-            local amount = item_price * GLOBAL_RATE_COEFFICIENT * input;
-            local playerID = P:GetGUIDLow();
-
-            if (player_money >= amount) then -- El jugador tiene dinero
-                local pago = formatCurrency(item_price * GLOBAL_RATE_COEFFICIENT * input)
-
-                if is_unique then -- El objeto es único
-                    -- El jugador desea comprar un objeto único que ya posee
-                    if P:HasItem(item_id) then
-                        P:SendBroadcastMessage('|cffff0000No puedes llevar más de ese objeto único.')
-                        P:GossipComplete()
-                        return
-                    else -- El jugador no posee el objeto único que desea comprar
-                        local single_purchase = item_price * GLOBAL_RATE_COEFFICIENT
-
-                        P:ModifyMoney(-single_purchase)
-                        P:AddItem(item_id, 1)
-                        P:SendBroadcastMessage('|cff00ff00Has comprado 1× ' .. item_link .. ' |cff00ff00por |cffff00ff' .. pago)
-                        WorldDBExecute( QQ.INSERT_INTO_LOG(playerID, item_id, 1, single_purchase) )
-                    end
-                else -- El objeto NO es único así que la compra solo es limitada por la cantidad de oro del jugador
-                    P:ModifyMoney(-amount)
-                    P:AddItem(item_id, input)
-                    P:SendBroadcastMessage('|cff00ff00Has comprado ' .. input .. '× ' .. item_link .. ' |cff00ff00por |cffff00ff' .. pago)
-
-                    WorldDBExecute( QQ.INSERT_INTO_LOG(playerID, item_id, input, amount) )
-                end
-                U:SendUnitSay(P:GetName() .. ' ha comprado ' .. input .. '× ' .. item_link, 0)
-
-                WorldDBExecute( QQ.INSERT_OR_UPDATE_FREQUENT_PURCHASE(item_id, item_price, item_maxCount, playerID))
-
-            else -- El jugador no tiene dinero
-                P:SendBroadcastMessage('|cffff0000No tienes suficiente dinero para esa compra.')
-            end
-        else -- El jugador ingresó un número incorrecto
-            P:SendBroadcastMessage('|cffff0000Ingresa un número entero positivo.')
-        end
-        P:GossipComplete()
+        player:GossipComplete()
     end
 end
 
-local function AL_RECARGAR_ELUNA(e)
-    WorldDBExecute(QQ.CREATE_ITEM_TABLE())
-    WorldDBExecute(QQ.CREATE_LOG_TABLE())
-    WorldDBExecute(QQ.CREATE_FRECUENT_TABLE())
-    WorldDBExecute(QQ.CREATE_FIXED_AMOUNT_TABLE())
-    WorldDBExecute(QQ.CREATE_GLOBAL_RATE_TABLE())
+RegisterCreatureGossipEvent(NPC_ID, 1, CLICK_1)
+RegisterCreatureGossipEvent(NPC_ID, 2, CLICK_2)
+
+local function AL_RECARGAR_ALE(e)
+    DB.CREATE_ITEM_TABLE();
+    DB.CREATE_LOG_TABLE();
+    DB.CREATE_FRECUENT_TABLE();
+    DB.CREATE_FIXED_AMOUNT_TABLE();
+    DB.CREATE_GLOBAL_RATE_TABLE();
+    DB.CREATE_BLACKLIST_TABLE();
 end
 
-RegisterCreatureGossipEvent(60000, 1, CLICK_1)
-RegisterCreatureGossipEvent(60000, 2, CLICK_2)
-RegisterServerEvent(33, AL_RECARGAR_ELUNA)
+RegisterServerEvent(33, AL_RECARGAR_ALE)
